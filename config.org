@@ -646,7 +646,9 @@ Modern Command Palette (Replacing Ivy/Counsel)
 #+end_src
 
 Prescient
-- improves suggestions by saving what you pick and better sorting suggested options
+- very useful
+- improves =M-x= and =find-file= suggestions
+- sorts them in most recently accessed order
 #+begin_src emacs-lisp
 (use-package prescient
   :config
@@ -1429,37 +1431,57 @@ vterm is using GNU utils, so GNU version of =ls=, =cp=, ...
 - open =pdf= files with Safari mac renderer
 
 #+begin_src emacs-lisp
-(defun my-xwidget-pdf-open ()
-  "Intercept PDF opening, kill raw buffer, and launch an Xwidget WebKit session instead."
-  (let ((file-path (buffer-file-name)))
-    (when file-path
-      ;; 1. Close the raw text buffer Emacs automatically created
-      (kill-buffer (current-buffer))
-      ;; 2. Convert the file path to an absolute URL and open it in Xwidgets
-      (xwidget-webkit-browse-url (concat "file://" (expand-file-name file-path))))))
+(use-package url-util
+  :ensure nil) ;; Built-in to Emacs, provides `url-unhex-string`
 
-(defun my-xwidget-webkit-dark-mode-advice (xwidget event-type &rest _)
-  "Inject dark mode CSS deterministically when an xwidget loads a PDF."
-  ;; Only trigger when WebKit reports the load state has changed
-  (when (and (eq event-type 'load-changed)
-             (memq my-dark-theme custom-enabled-themes))
-    (let ((uri (xwidget-webkit-uri xwidget)))
-      ;; Verify that this specific xwidget is actually viewing a PDF
-      (when (and uri (string-match-p "\\.pdf\\'" uri))
-        (xwidget-webkit-execute-script
-         xwidget
-         "document.documentElement.style.filter = 'invert(1) hue-rotate(180deg)';
-          document.documentElement.style.background = '#1e1e1e';")))))
+(use-package xwidget
+  :ensure nil ;; Built-in, assuming your Emacs was compiled with --with-xwidgets
+  :bind (:map xwidget-webkit-mode-map
+              ("=" . xwidget-webkit-zoom-in))  
+  :hook
+  ;; hide the "WebKit:" header line
+  (xwidget-webkit-mode . (lambda () (setq header-line-format nil)))
+  :init
+  ;; The :init block runs BEFORE the package loads. 
+  ;; We put the auto-mode-alist trigger here so Emacs knows to intercept PDFs 
+  ;; even if you haven't explicitly opened an xwidget yet.
+  
+  (defun my-xwidget-pdf-open ()
+    "Intercept PDF opening, kill raw buffer, and launch an Xwidget WebKit session instead."
+    (let ((file-path (buffer-file-name)))
+      (when file-path
+        (kill-buffer (current-buffer))
+        (xwidget-webkit-browse-url (concat "file://" (expand-file-name file-path))))))
 
-;; Attach our listener to Emacs's primary xwidget event handler
-(advice-add 'xwidget-webkit-callback :after #'my-xwidget-webkit-dark-mode-advice)
+  (add-to-list 'auto-mode-alist '("\\.pdf\\'" . my-xwidget-pdf-open))
 
-;; Tell Emacs to trigger our function every time a file ends in .pdf
-(add-to-list 'auto-mode-alist '("\\.pdf\\'" . my-xwidget-pdf-open))
+  :config
+  ;; The :config block runs AFTER the package loads.
+  ;; We define and apply the advice here since it modifies internal xwidget functions.
+  
+  (defun my-xwidget-webkit-pdf-advice (xwidget event-type &rest _)
+    "Inject dark mode CSS and dynamically rename the buffer to the PDF's filename."
+    (when (memq event-type '(load-changed title))
+      (let ((uri (xwidget-webkit-uri xwidget)))
+        (when (and uri (string-match-p "\\.pdf\\'" uri))
+          
+          ;; 1. Fix the tab/buffer name
+          (let ((file-name (url-unhex-string (file-name-nondirectory uri))))
+            (when (buffer-live-p (xwidget-buffer xwidget))
+              (with-current-buffer (xwidget-buffer xwidget)
+                (unless (string= (buffer-name) file-name)
+                  (rename-buffer file-name t)))))
+          
+          ;; 2. Inject dark mode deterministically
+          (when (and (eq event-type 'load-changed)
+                     (boundp 'my-dark-theme)
+                     (memq my-dark-theme custom-enabled-themes))
+            (xwidget-webkit-execute-script
+             xwidget
+             "document.documentElement.style.filter = 'invert(1) hue-rotate(180deg)';
+              document.documentElement.style.background = '#1e1e1e';"))))))
 
-;; "=" instead of "+" to zoom
-(with-eval-after-load 'xwidget
-  (define-key xwidget-webkit-mode-map (kbd "=") 'xwidget-webkit-zoom-in))
+  (advice-add 'xwidget-webkit-callback :after #'my-xwidget-webkit-pdf-advice))
   #+end_src
 
 * 8. dired
