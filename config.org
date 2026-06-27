@@ -691,8 +691,7 @@ not very useful in practice
 #+end_src
 
 * 5. session & workspace
-** EasySession + Startup Screen
-- Saves open files, tabs, windows when exiting emacs
+** EasySession Saves open files, tabs, windows when exiting emacs
 - Have different layouts saved as sessions, easily switch between them
 - [[https://github.com/jamescherti/easysession.el][Source]]
 
@@ -700,6 +699,8 @@ not very useful in practice
 (use-package easysession
   :demand t
   :config
+  ;; prevent auto-loading session on startup
+  (setq easysession-setup-load-session nil)
   ;; Prevent EasySession from automatically saving when switching sessions
   (setq easysession-switch-to-save-session nil)
   ;; Disable the background auto-save interval
@@ -709,7 +710,7 @@ not very useful in practice
   ;; Tell EasySession's auto-save feature that NO session qualifies for automatic saving
   (setq easysession-save-mode-predicate (lambda () nil))
 
-;; Instruct frameset to strictly manage interior window splits, 
+  ;; Instruct frameset to strictly manage interior window splits, 
   ;; never touching the macOS frame dimensions or window states.
   (require 'frameset)
   (dolist (param '(left top width height fullscreen))
@@ -719,44 +720,119 @@ not very useful in practice
   (easysession-setup))
   #+end_src
 
-** Dashboard (Idle)
+** Startup screen
 #+begin_src emacs-lisp
-;; (use-package dashboard
-;;   :after all-the-icons
-;;   :config
-;;   (require 'all-the-icons)
-;;   (dashboard-setup-startup-hook)
-  
-;;   ;; UI Settings
-;;   (setq dashboard-center-content t)
-;;   (setq dashboard-startup-banner 'logo)
-;;   (setq dashboard-banner-logo-title "E M A C S")
-;;   (setq dashboard-set-heading-icons t)
-;;   (setq dashboard-set-file-icons t)
-;;   (setq dashboard-display-icons-p t)
-;;   (setq dashboard-icon-type 'all-the-icons)
+(defun my/home-screen ()
+  "Create a minimalist, multi-column home screen buffer."
+  (interactive)
+  (let ((buffer (get-buffer-create "*Home*"))
+        ;; Adjust these variables to shift the columns left or right
+        (col1-offset 15) 
+        (col2-offset 55))
+    
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        
+        ;; Set up a clean, specialized mode
+        (special-mode)
+        (visual-line-mode -1)
+        (setq truncate-lines t)
 
-;;   ;; Configure Vanilla Widgets
-;;   (setq dashboard-items '((projects . 4)
-;;                           (recents  . 4)))
-  
-;;   (setq dashboard-titles '((recents  . "Recent Files")
-;;                            (projects . "Jump To Goals & Work")))
+        ;; Pre-fill the buffer with blank lines so we can freely jump around
+        ;; using coordinates (like a canvas)
+        (insert (make-string 60 ?\n))
 
-  
-;;   ;; Hardcoded list of files to display under the projects widget
-;;   (setq dashboard-projects-list '("~/gonz/goals/social.org"
-;;                                   "~/gonz/goals/free-time.org"
-;;                                   "~/gonz/goals/finances.org"
-;;                                   "~/gonz/goals/two-sigma.org")))
-#+end_src
+        ;; --- Helper Functions (Local to this block) ---
+        (let* ((draw-block
+                (lambda (title items start-line col)
+                  (goto-char (point-min))
+                  (forward-line start-line)
+                  (move-to-column col t)
+                  (insert (propertize title 'face '(:weight bold :foreground "cyan")))
+                  (let ((current-line (1+ start-line)))
+                    (if items
+                        (dolist (item items)
+                          (goto-char (point-min))
+                          (forward-line current-line)
+                          (move-to-column (+ col 2) t) ; indent 2 spaces
+                          (insert-text-button (car item)
+                                              'face 'default
+                                              'follow-link t
+                                              'help-echo "Click or press RET"
+                                              'action (cdr item))
+                          (setq current-line (1+ current-line)))
+                      ;; If directory is empty
+                      (goto-char (point-min))
+                      (forward-line current-line)
+                      (move-to-column (+ col 2) t)
+                      (insert (propertize "(Empty)" 'face 'shadow))
+                      (setq current-line (1+ current-line)))
+                    ;; Return the next available line + 2 for vertical padding
+                    (+ current-line 2))))
+               
+               (get-files
+                (lambda (dir)
+                  (let ((path (expand-file-name dir)))
+                    (when (file-exists-p path)
+                      (let ((files (directory-files path nil "^\\([^.]\\)")))
+                        (mapcar (lambda (f)
+                                  (cons f `(lambda (_) (find-file ,(expand-file-name f path)))))
+                                files))))))
+               
+               (get-sessions
+                (lambda ()
+                  (let* ((session-dir (if (boundp 'easysession-dir) 
+                                          easysession-dir 
+                                        (expand-file-name "easysession/" user-emacs-directory)))
+                         (sessions (when (file-exists-p session-dir)
+                                     (directory-files session-dir nil "^\\([^.]\\)"))))
+                    (mapcar (lambda (s)
+                              (let ((name (file-name-sans-extension s)))
+                                (cons name `(lambda (_) (easysession-load ,name)))))
+                            sessions)))))
 
-** Screen Saver (Idle)
-#+begin_src emacs-lisp
-;; (use-package zone
-;;   :config
-;;   (zone-when-idle 4)
-;; )
+          ;; --- Draw The Canvas ---
+          
+          ;; Header
+          (goto-char (point-min))
+          (forward-line 2)
+          (move-to-column 36 t) ;; Centered roughly between col 1 and 2
+          (insert (propertize "W E L C O M E" 'face '(:height 1.2 :weight bold :foreground "dark gray")))
+
+          ;; Row 1
+          (let* ((row1-start 6)
+                 (r1-left-end (funcall draw-block "[ ~/gonz/ ]" (funcall get-files "~/gonz/") row1-start col1-offset))
+                 (r1-right-end (funcall draw-block "[ Sessions ]" (funcall get-sessions) row1-start col2-offset))
+                 
+                 ;; Row 2 starts safely below the longest list in Row 1
+                 (row2-start (max r1-left-end r1-right-end))
+                 (r2-left-end (funcall draw-block "[ ~/gonz/projects/ ]" (funcall get-files "~/gonz/projects/") row2-start col1-offset))
+                 (r2-right-end (funcall draw-block "[ ~/gonz/knowledge/ ]" (funcall get-files "~/gonz/knowledge/") row2-start col2-offset))
+
+                 ;; Row 3 starts safely below the longest list in Row 2
+                 (row3-start (max r2-left-end r2-right-end))
+                 (r3-left-end (funcall draw-block "[ ~/gonz/cs/ ]" (funcall get-files "~/gonz/cs/") row3-start col1-offset))
+                 (r3-right-end (funcall draw-block "[ ~/gonz/current/ ]" (funcall get-files "~/gonz/current/") row3-start col2-offset))
+                 
+                 ;; Final bottom margin
+                 (final-line (max r3-left-end r3-right-end)))
+
+            ;; Clean up unused blank lines at the bottom
+            (goto-char (point-min))
+            (forward-line final-line)
+            (delete-region (point) (point-max))))
+
+        ;; Return cursor to a nice aesthetic position at the top
+        (goto-char (point-min))
+        (forward-line 2)
+        (move-to-column 36)))
+    
+    (switch-to-buffer buffer)
+    buffer))
+
+;; tell Emacs this function is the definitive startup buffer
+(setq initial-buffer-choice #'my/home-screen)
 #+end_src
 
 * 6. programming
@@ -859,7 +935,6 @@ Code folding ([[https://github.com/jamescherti/outline-indent.el][source]]) (not
 
 ;; (add-hook 'prog-mode-hook #'outline-indent-minor-mode)
 #+end_src
-
 
 ** code indenting
 #+begin_src emacs-lisp
@@ -1084,7 +1159,6 @@ Grammars were manually installed using =treesit-install-language-grammar= comman
 (add-to-list 'auto-mode-alist '("\\.go\\'" . go-ts-mode))
 (add-to-list 'auto-mode-alist '("/go\\.mod\\'" . go-mod-ts-mode))
 #+end_src
-
 
 ** debugger
 *dap-mode*
@@ -1424,28 +1498,8 @@ dired config
 )
 #+end_src
 
-*Dired-hacks*
-[[https://github.com/Fuco1/dired-hacks/tree/master][dired-hacks]] is a repo with a lot of features you can add to =dired=
 
-
-Dired-preview (disabled, distracting)
-#+begin_src emacs-lisp
-;; (use-package dired-preview
-;;   :after dired
-;;   :hook (dired-mode . dired-preview-mode)
-;;   :config
-;;   (setq dired-preview-delay 0) ;; load previews instantly
-
-;;   ;; custom setting of where want preview window to appear
-;;   (setq dired-preview-display-action-alist
-;;         '((display-buffer-in-side-window)
-;;           (side . right)
-;;           (window-width . 0.5)
-;;           (preserve-size . (t . t))))
-;; )
-#+end_src
-
-** dired-sidebar
+*dired-sidebar*
 - much faster, less clunky than treemacs
 #+begin_src emacs-lisp
 ;; icon setup
@@ -1487,8 +1541,19 @@ Dired-preview (disabled, distracting)
   (setq dired-sidebar-should-follow-file t))
 #+end_src
 
+*dired-x*
+#+begin_src emacs-lisp
+(use-package dired-x
+  :ensure nil ;; built-in
+  :hook (dired-mode . dired-omit-mode)
+  :config
+  ;; hide .DS_Store
+  (setq dired-omit-files 
+        (concat dired-omit-files "\\|^\\.DS_Store$")))
+#+end_src
 
-** archived packages
+
+* 9. archived packages
 *** dirvish (too slow, clunky)
 Two command line tools must be installed:
 1. coreutils (=brew install coreutils=)
@@ -1582,7 +1647,63 @@ Auto open treemacs for coding projects (disabled)
 ;; (add-hook 'find-file-hook #'my/auto-open-treemacs)
 #+end_src
 
-*  run last
+*** Dashboard (disabled)
+#+begin_src emacs-lisp
+;; (use-package dashboard
+;;   :after all-the-icons
+;;   :config
+;;   (require 'all-the-icons)
+;;   (dashboard-setup-startup-hook)
+  
+;;   ;; UI Settings
+;;   (setq dashboard-center-content t)
+;;   (setq dashboard-startup-banner 'logo)
+;;   (setq dashboard-banner-logo-title "E M A C S")
+;;   (setq dashboard-set-heading-icons t)
+;;   (setq dashboard-set-file-icons t)
+;;   (setq dashboard-display-icons-p t)
+;;   (setq dashboard-icon-type 'all-the-icons)
+
+;;   ;; Configure Vanilla Widgets
+;;   (setq dashboard-items '((projects . 4)
+;;                           (recents  . 4)))
+  
+;;   (setq dashboard-titles '((recents  . "Recent Files")
+;;                            (projects . "Jump To Goals & Work")))
+
+  
+;;   ;; Hardcoded list of files to display under the projects widget
+;;   (setq dashboard-projects-list '("~/gonz/goals/social.org"
+;;                                   "~/gonz/goals/free-time.org"
+;;                                   "~/gonz/goals/finances.org"
+;;                                   "~/gonz/goals/two-sigma.org")))
+#+end_src
+
+*** Screen Saver (Disabled)
+#+begin_src emacs-lisp
+;; (use-package zone
+;;   :config
+;;   (zone-when-idle 4)
+;; )
+#+end_src
+*** Dired-preview (disabled, distracting)
+#+begin_src emacs-lisp
+;; (use-package dired-preview
+;;   :after dired
+;;   :hook (dired-mode . dired-preview-mode)
+;;   :config
+;;   (setq dired-preview-delay 0) ;; load previews instantly
+
+;;   ;; custom setting of where want preview window to appear
+;;   (setq dired-preview-display-action-alist
+;;         '((display-buffer-in-side-window)
+;;           (side . right)
+;;           (window-width . 0.5)
+;;           (preserve-size . (t . t))))
+;; )
+#+end_src
+
+*  10. run last
 Emacs has a notoriously low default Garbage Collection (GC) threshold (about 800KB). Because loading packages generates a lot of garbage, Emacs will pause hundreds of times during startup just to clean up memory.
 
 Garbage collection frequency was reduced in =early-init.el= for faster startup, so need to reset now:
