@@ -289,47 +289,40 @@ Hiding modeline globally:
 #+begin_src emacs-lisp
 (setq-default mode-line-format nil)
 #+end_src
+
 ** Tabs
-*** Tab keybindings
-Closing a tab
-#+begin_src emacs-lisp
-;; Option 1: just close the tab
-(global-set-key (kbd "M-w") #'tab-close)
-
-;; Option 2: close the tab and kill all buffers in that tab
-;; (defun my/tab-close-and-kill-buffers ()
-;;   "Close the current tab and kill all buffers that were visible inside it."
-;;   (interactive)
-;;   ;; 1. Capture all unique buffers visible in the current tab's windows
-;;   (let ((buffers-to-kill (delete-dups (mapcar #'window-buffer (window-list)))))
-;;     ;; 2. Close the tab first (switches to the next tab safely)
-;;     (tab-close)
-;;     ;; 3. Loop through and kill the captured buffers
-;;     (dolist (buf buffers-to-kill)
-;;       (when (and (buffer-live-p buf)
-;;                  (not (minibufferp buf))
-;;                  (not (string-prefix-p " " (buffer-name buf)))) ; Skip internal hidden buffers
-;;         (kill-buffer buf)))))
-
-;; (global-set-key (kbd "M-w") #'my/tab-close-and-kill-buffers)
-#+end_src
-
-Rest of shortcuts
-#+begin_src emacs-lisp
-(global-set-key (kbd "M-t") #'tab-new)
-(global-set-key (kbd "<C-tab>") #'tab-next)
-(global-set-key (kbd "<C-S-tab>") #'tab-previous)
-#+end_src
-*** Tab appearance
-*Vim tabs appearance package*
-the =:init= and =:config= consist of code to add dot to unsaved tabs like VSCode
+- =vim-tab-bar= package (built on top of =tab-bar-mode=)
+- tried =centaur-tabs= and =tab-bar-mode=, not great, they don't behave like standard modern tabs.
 #+begin_src emacs-lisp
 (use-package vim-tab-bar
   :commands vim-tab-bar-mode
   :hook (after-init . vim-tab-bar-mode))
 #+end_src
 
-Tried =centaur-tabs= and =tab-bar-mode=, not great, they don't behave like standard modern tabs.
+turn right-click on tab to menu suggesting renaming
+#+begin_src emacs-lisp
+(defun my-tab-bar-only-rename-menu (event)
+  "Completely replace the tab-bar right-click menu to only show 'Rename'."
+  (interactive "e")
+  (let ((menu (make-sparse-keymap "")))
+    ;; Add only our Rename command to the blank menu
+    (define-key menu [rename-tab]
+      '(menu-item "Rename" tab-rename
+                  :help "Rename the currently active tab"))
+    ;; Pop it up on the screen
+    (popup-menu menu event)))
+
+;; Hijack the default function and force it to use ours instead
+(advice-add 'tab-bar-mouse-context-menu :override #'my-tab-bar-only-rename-menu)
+#+end_src
+
+Keybindings
+#+begin_src emacs-lisp
+(global-set-key (kbd "M-w") #'tab-close)
+(global-set-key (kbd "M-t") #'tab-new)
+(global-set-key (kbd "<C-tab>") #'tab-next)
+(global-set-key (kbd "<C-S-tab>") #'tab-previous)
+#+end_src
 
 ** Window Dividers
 Enable thin borders for both vertical and horizontal window splits
@@ -421,13 +414,14 @@ Zooming in/out
 #+end_src
 
 ** Modernize Text Editing
-
+General modernizing
 #+begin_src emacs-lisp
 (setq use-short-answers t)               ;; change all "yes/no" prompts to "y/n"
 (setq large-file-warning-threshold nil)  ;; don't ask "large file, want to open?"
 (delete-selection-mode 1)                ;; typing on selected text deletes it
 (save-place-mode 1)                      ;; remember cursor location in files after closing
 (global-auto-revert-mode t)              ;; automatically show changes if the file has changed
+(setq mouse-autoselect-window t)         ;; move mouse accross windows, auto switch
 #+end_src
 
 Copy/Paste/Undo/Redo
@@ -1441,36 +1435,44 @@ vterm is using GNU utils, so GNU version of =ls=, =cp=, ...
   :hook
   ;; hide the "WebKit:" header line
   (xwidget-webkit-mode . (lambda () (setq header-line-format nil)))
-  :init
-  ;; The :init block runs BEFORE the package loads. 
-  ;; We put the auto-mode-alist trigger here so Emacs knows to intercept PDFs 
-  ;; even if you haven't explicitly opened an xwidget yet.
   
+  :init
   (defun my-xwidget-pdf-open ()
     "Intercept PDF opening, kill raw buffer, and launch an Xwidget WebKit session instead."
-    (let ((file-path (buffer-file-name)))
+    (let ((file-path (expand-file-name (buffer-file-name)))
+          (file-name (file-name-nondirectory (buffer-file-name))))
       (when file-path
         (kill-buffer (current-buffer))
-        (xwidget-webkit-browse-url (concat "file://" (expand-file-name file-path))))))
+        (xwidget-webkit-browse-url (concat "file://" file-path) t)
+        
+        ;; SYNCHRONOUSLY spoof the file association so session managers 
+        ;; track it and windows map it instantly on startup.
+        (let ((xw-buf (current-buffer)))
+          (with-current-buffer xw-buf
+            (rename-buffer file-name t)
+            (setq buffer-file-name file-path)
+            (set-visited-file-modtime)
+            (set-buffer-modified-p nil))))))
 
   (add-to-list 'auto-mode-alist '("\\.pdf\\'" . my-xwidget-pdf-open))
 
   :config
-  ;; The :config block runs AFTER the package loads.
-  ;; We define and apply the advice here since it modifies internal xwidget functions.
-  
   (defun my-xwidget-webkit-pdf-advice (xwidget event-type &rest _)
-    "Inject dark mode CSS and dynamically rename the buffer to the PDF's filename."
+    "Inject dark mode CSS and dynamically ensure the buffer name and path stay accurate."
     (when (memq event-type '(load-changed title))
       (let ((uri (xwidget-webkit-uri xwidget)))
         (when (and uri (string-match-p "\\.pdf\\'" uri))
           
-          ;; 1. Fix the tab/buffer name
+          ;; 1. Double check the buffer name and path integrity post-load
           (let ((file-name (url-unhex-string (file-name-nondirectory uri))))
             (when (buffer-live-p (xwidget-buffer xwidget))
               (with-current-buffer (xwidget-buffer xwidget)
                 (unless (string= (buffer-name) file-name)
-                  (rename-buffer file-name t)))))
+                  (rename-buffer file-name t))
+                (when (string-prefix-p "file://" uri)
+                  (setq buffer-file-name (url-unhex-string (substring uri 7)))
+                  (set-visited-file-modtime)
+                  (set-buffer-modified-p nil)))))
           
           ;; 2. Inject dark mode deterministically
           (when (and (eq event-type 'load-changed)
@@ -1482,7 +1484,7 @@ vterm is using GNU utils, so GNU version of =ls=, =cp=, ...
               document.documentElement.style.background = '#1e1e1e';"))))))
 
   (advice-add 'xwidget-webkit-callback :after #'my-xwidget-webkit-pdf-advice))
-  #+end_src
+      #+end_src
 
 * 8. dired
 default directory

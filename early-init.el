@@ -1,5 +1,4 @@
 ;; early-init.el
-
 ;; Garbage Collection Hack (Remember to reset in init.el!)
 (setq gc-cons-threshold most-positive-fixnum)
 
