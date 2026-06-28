@@ -11,16 +11,49 @@ brew install --cask emacs-plus-app
 #+end_src
 Further installation details in the [[https://github.com/d12frosted/homebrew-emacs-plus][official emacs-plus repository]]
 
-*Native Compilation*
-=emacs-plus= comes by default with Native Compilation. If switch =emacs= version, make sure to download with native compilation
 
-Directly translates Emacs Lisp (Elisp) code into machine code
-+ massive performance boost (2x to 5x)
-+ smoother text rendering
-+ much faster package execution (LSP integration)
-+ everything will feel snappier, reducing UI stutter
-+ faster startup time
+
+** Native Compilation
+*Before native compilation*
+- Historically, whenever you open a package in emacs, it would interpret the package's source code on the fly
+- slow
+
+*After native compilation* (=emacs 28+=)
+- Packages' source code gets compiled into super fast machine code once
+- from then on gets run (instead of reinterpreting every time)
+- =libgccjit= (GCC Just-In-Time compiler) is the compiler =emacs= uses to compile packages
+- smoother text rendering, faster package execution, faster startup time, less UI stutter
+
+-> =emacs-plus= comes by default with Native Compilation
+
+*libgccjit hack*
+- =libgccjit= needs some libraries (like =emutls-w= file), but sometimes with macOS hard to access
+- below is a hack force =emacs= to look in =/opt/homebrew/bin/gcc-16= to access =emutls-w=
+#+begin_src emacs-lisp
+;; --------------------------------------------------------
+;; Fix Emacs macOS Native Compilation (emutls_w Linker Error)
+;; --------------------------------------------------------
+;; Apple's linker ignores the LIBRARY_PATH environment variable. 
+;; We must explicitly pass the exact -L path to Emacs's compiler driver.
+(with-eval-after-load 'comp
+  ;; Ensure macOS SDK is found
+  (setenv "SDKROOT" (string-trim (shell-command-to-string "xcrun --show-sdk-path")))
+  
+  ;; Dynamically ask Homebrew GCC 16 where it hides libemutls_w.a
+  (let ((gcc-bin "/opt/homebrew/bin/gcc-16"))
+    (when (file-executable-p gcc-bin)
+      (let* ((lib-file (string-trim (shell-command-to-string (concat gcc-bin " -print-file-name=libemutls_w.a"))))
+             (lib-dir (file-name-directory lib-file)))
+        (when (and lib-file (file-exists-p lib-file) lib-dir)
+          ;; Explicitly tell the compiler driver where to find the Homebrew GCC libraries
+          (add-to-list 'native-comp-driver-options (concat "-L" lib-dir))
+          (add-to-list 'native-comp-driver-options "-L/opt/homebrew/opt/gcc/lib/gcc/16")
+          (add-to-list 'native-comp-driver-options "-L/opt/homebrew/lib"))))))
+#+end_src
+
+
 ** OS Integration & Paths
+environment variables
 #+begin_src emacs-lisp
 ;; macOS GUI applications do not naturally inherit environment variables (like $PATH)
 ;; from your terminal. This package forces Emacs to read your shell's profile
@@ -28,10 +61,7 @@ Directly translates Emacs Lisp (Elisp) code into machine code
 ;; NOTE: This will add a slight delay to startup as it has to spin up an interactive shell.
 (use-package exec-path-from-shell
   :config
-  (exec-path-from-shell-initialize)
-  ;; Force Emacs to copy these specific variables from your terminal
-  (setq exec-path-from-shell-variables '("PATH" "MANPATH" "LIBRARY_PATH" "PKG_CONFIG_PATH"))
-)
+  (exec-path-from-shell-initialize))
 
 
 ;; Tell Emacs where to look for Homebrew binaries and GNU utilities on macOS
@@ -1075,15 +1105,14 @@ Different languages will have different LSP server implementations, so they will
   installed with =npm install -g pyright=
   #+begin_src emacs-lisp
 (use-package lsp-pyright
-  :hook (python-mode . (lambda () (require 'lsp-pyright))))
+  :hook (python-ts-mode . (lambda () (require 'lsp-pyright))))
 #+end_src
 
 - *java*
 #+begin_src emacs-lisp
 ;; java's language server can be downloaded with a melpa package
 (use-package lsp-java
-  :hook ((java-mode . lsp)
-         (java-ts-mode . lsp)) ;; Ensures it catches tree-sitter buffers too
+  :hook (java-ts-mode . lsp)
   :config
   ;; Point this to your new Homebrew Java 21 binary
   (setq lsp-java-java-path "/opt/homebrew/opt/openjdk@21/bin/java"))
@@ -1109,51 +1138,58 @@ It's mostly invisible, it just highlights your text better
 Tree-sitter comes with emacs, but not the grammars used to parse each language
 Grammars were manually installed using =treesit-install-language-grammar= command
 #+begin_src emacs-lisp
-;; Tell Emacs to use Tree-sitter modes instead of legacy modes
-(setq major-mode-remap-alist
-      '(;; Core
-        (c-mode          . c-ts-mode)
-        (c++-mode        . c++-ts-mode)
-        (c-or-c++-mode   . c-or-c++-ts-mode)
-        (bash-mode       . bash-ts-mode)
-        (sh-mode         . bash-ts-mode)
-        (python-mode     . python-ts-mode)
-        (java-mode       . java-ts-mode)
-        (go-mode         . go-ts-mode)
-        
-        ;; Scripting & Web
-        (ruby-mode       . ruby-ts-mode)
-        (lua-mode        . lua-ts-mode)      
-        (css-mode        . css-ts-mode)
-        (html-mode       . html-ts-mode)
-        (javascript-mode . js-ts-mode)
-        (js-mode         . js-ts-mode)
-        (js2-mode        . js-ts-mode)       
-        (typescript-mode . typescript-ts-mode)
-        (php-mode        . php-ts-mode)      
-        
-        ;; Data & Backend
-        (json-mode       . json-ts-mode)
-        (js-json-mode    . json-ts-mode)
-        (yaml-mode       . yaml-ts-mode)
-        (conf-toml-mode  . toml-ts-mode)
-        (cmake-mode      . cmake-ts-mode)
-        (dockerfile-mode . dockerfile-ts-mode)
-        (csharp-mode     . csharp-ts-mode)
-        (rust-mode       . rust-ts-mode)
-        (elixir-mode     . elixir-ts-mode)   
-        (heex-mode       . heex-ts-mode)))   
+;; if a file asks for c-mode (or python-mode, etc), open c-ts-mode instead
+(use-package treesit-auto
+  :custom
+  (treesit-auto-install 'prompt) ;; Prompts you to download grammars if missing
+  :config
+  (treesit-auto-add-to-auto-mode-alist 'all)
+  (global-treesit-auto-mode))
 
-;; Catch extensions that have no built-in legacy mode to remap from
-(add-to-list 'auto-mode-alist '("\\.rs\\'" . rust-ts-mode))
-(add-to-list 'auto-mode-alist '("\\.ts\\'" . typescript-ts-mode))
-(add-to-list 'auto-mode-alist '("\\.tsx\\'" . tsx-ts-mode))
-(add-to-list 'auto-mode-alist '("\\.ya?ml\\'" . yaml-ts-mode))
-(add-to-list 'auto-mode-alist '("\\.toml\\'" . toml-ts-mode))
-(add-to-list 'auto-mode-alist '("\\.json\\'" . json-ts-mode))
-(add-to-list 'auto-mode-alist '("Dockerfile\\'" . dockerfile-ts-mode))
-(add-to-list 'auto-mode-alist '("\\.go\\'" . go-ts-mode))
-(add-to-list 'auto-mode-alist '("/go\\.mod\\'" . go-mod-ts-mode))
+;; (setq major-mode-remap-alist
+;;       '(;; Core
+;;         (c-mode          . c-ts-mode)
+;;         (c++-mode        . c++-ts-mode)
+;;         (c-or-c++-mode   . c-or-c++-ts-mode)
+;;         (bash-mode       . bash-ts-mode)
+;;         (sh-mode         . bash-ts-mode)
+;;         (python-mode     . python-ts-mode)
+;;         (java-mode       . java-ts-mode)
+;;         (go-mode         . go-ts-mode)
+        
+;;         ;; Scripting & Web
+;;         (ruby-mode       . ruby-ts-mode)
+;;         (lua-mode        . lua-ts-mode)      
+;;         (css-mode        . css-ts-mode)
+;;         (html-mode       . html-ts-mode)
+;;         (javascript-mode . js-ts-mode)
+;;         (js-mode         . js-ts-mode)
+;;         (js2-mode        . js-ts-mode)       
+;;         (typescript-mode . typescript-ts-mode)
+;;         (php-mode        . php-ts-mode)      
+        
+;;         ;; Data & Backend
+;;         (json-mode       . json-ts-mode)
+;;         (js-json-mode    . json-ts-mode)
+;;         (yaml-mode       . yaml-ts-mode)
+;;         (conf-toml-mode  . toml-ts-mode)
+;;         (cmake-mode      . cmake-ts-mode)
+;;         (dockerfile-mode . dockerfile-ts-mode)
+;;         (csharp-mode     . csharp-ts-mode)
+;;         (rust-mode       . rust-ts-mode)
+;;         (elixir-mode     . elixir-ts-mode)   
+;;         (heex-mode       . heex-ts-mode)))   
+
+;; ;; Catch extensions that have no built-in legacy mode to remap from
+;; (add-to-list 'auto-mode-alist '("\\.rs\\'" . rust-ts-mode))
+;; (add-to-list 'auto-mode-alist '("\\.ts\\'" . typescript-ts-mode))
+;; (add-to-list 'auto-mode-alist '("\\.tsx\\'" . tsx-ts-mode))
+;; (add-to-list 'auto-mode-alist '("\\.ya?ml\\'" . yaml-ts-mode))
+;; (add-to-list 'auto-mode-alist '("\\.toml\\'" . toml-ts-mode))
+;; (add-to-list 'auto-mode-alist '("\\.json\\'" . json-ts-mode))
+;; (add-to-list 'auto-mode-alist '("Dockerfile\\'" . dockerfile-ts-mode))
+;; (add-to-list 'auto-mode-alist '("\\.go\\'" . go-ts-mode))
+;; (add-to-list 'auto-mode-alist '("/go\\.mod\\'" . go-mod-ts-mode))
 #+end_src
 
 ** debugger
